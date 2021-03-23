@@ -45,7 +45,6 @@ def access_api(term, page, start_date, end_date):
     while i < 3 and (content is None or resp.status_code != 200):
         try:
             resp = requests.get(url)
-            increment_queries()
         except ProtocolError:
             log.warn("Protocol error, sleeping 5 mins and retrying.")
             time.sleep(300)
@@ -94,26 +93,63 @@ def scrape_term(term):
     date_gap = end_date - start_date
     page = 0
     session = Session()
+
     last_article = session.query(Article).filter_by(term=term).order_by(Article.created.desc()).first()
-    if last_article is not None:
-        start_date = last_article.start_date
-        end_date = last_article.end_date
-        if end_date >= settings.END_DATE:
-            return
-    while start_date < settings.END_DATE:
-        if end_date > settings.END_DATE:
-            end_date = deepcopy(settings.END_DATE)
+    first_article = session.query(Article).filter_by(term=term).order_by(Article.created.asc()).first()
+    recent_page = None
+
+    if last_article is None or first_article is None:
+        print(f'Term {term} has not been scraped before.')
+        start_date_cap = deepcopy(settings.END_DATE)
+    else:
+        if last_article.end_date >= settings.END_DATE:
+            if first_article.start_date <= settings.START_DATE:
+                log.info(f'It seems like "{term}" has already been scraped.')
+                return
+            else:
+                end_date = start_date + (first_article.end_date - first_article.start_date)
+                start_date_cap = first_article.start_date - datetime.timedelta(1)
+        elif first_article.start_date >= settings.START_DATE and last_article.end_date < settings.END_DATE:
+            start_date = last_article.start_date
+            end_date = last_article.end_date
+            start_date_cap = deepcopy(settings.END_DATE)
+            completed_pages = set(a.page for a in session.query(Article).filter_by(term=term, start_date=start_date, end_date=end_date))
+            for p in range(list(sorted(completed_pages))[-1] + 1):
+                if p in completed_pages:
+                    recent_page = p
+                else:
+                    break
+
+            if recent_page:
+                recent_page += 1
+        else:
+            start_date_cap = deepcopy(settings.END_DATE)
+            # raise ValueError(f'Unhandled case of dates:\nLast: {last_article}\nFirst: {first_article}')
+
+    while start_date < start_date_cap:
+        if end_date > start_date_cap:
+            end_date = deepcopy(start_date_cap)
         date_gap = end_date - start_date
         data = access_api(term, page, start_date, end_date)
         allowed_hits = (settings.MAX_HIT_PAGES * settings.HITS_PER_PAGE)
+        if 'meta' not in data:
+            print(data)
+            raise KeyError
         while data["meta"]["hits"] > allowed_hits:
             date_ratio = data["meta"]["hits"] / allowed_hits
             date_gap = date_gap / date_ratio
             end_date = deepcopy(start_date) + date_gap
             data = access_api(term, page, start_date, end_date)
+
         log.info("Working on date range {0} to {1}, with {2} hits.".format(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), data["meta"]["hits"]))
-        page = 0
+        page = recent_page or 0
+        completed_pages = set(a.page for a in session.query(Article).filter_by(term=term, start_date=start_date, end_date=end_date))
+
         while page * settings.HITS_PER_PAGE < data["meta"]["hits"] and (page + 1) < settings.MAX_HIT_PAGES:
+            if page in completed_pages:
+                log.info(f'  skipping page {page}')
+                page += 1
+                continue
             data = access_api(term, page, start_date, end_date)
             for doc in data["docs"]:
                 article = session.query(Article).filter_by(nyt_id=doc["_id"]).first()
@@ -130,7 +166,9 @@ def scrape_term(term):
                     )
                     session.add(article)
                     session.commit()
+            log.info(f"  finished up to page {page}")
             page += 1
+        recent_page = None
         start_date = end_date
         end_date = deepcopy(start_date) + date_gap
     log.info("Done with term {0}.".format(term))

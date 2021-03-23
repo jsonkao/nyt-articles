@@ -16,9 +16,9 @@ def extract_field(data, field):
         data = data.decode("utf-8")
     return data.replace(",", " ")
 
-def dump_articles():
+def dump_articles(terms=settings.SCRAPE_TERMS):
     session = Session()
-    articles = session.query(Article).filter(Article.term.in_(settings.SCRAPE_TERMS)).all()
+    articles = session.query(Article).filter(Article.term.in_(terms)).all()
     headers = ["term"] + settings.ARTICLE_OUTPUT_FIELDS
     article_list = [headers]
     for a in articles:
@@ -32,5 +32,13 @@ def dump_articles():
         wr = csv.writer(csvfile)
         wr.writerows(article_list)
 
+def dump_ids(terms=settings.SCRAPE_TERMS):
+    session = Session()
+    articles = session.query(Article).filter(Article.term.in_(terms)).all()
+    print('term,nyt_id')
+    for a in articles:
+        term = a.term.rstrip('*')
+        print(f'{term},{a.nyt_id}')
+
 if __name__ == "__main__":
-    dump_articles()
+    dump_ids(terms=['litigation', 'protest', 'protest*', 'reimbursement', 'debt bondage', 'modern slavery', 'living wage'])
